@@ -1,182 +1,165 @@
-import datetime
-import io
-import re
+import streamlit as st
 import pandas as pd
 import requests
-import streamlit as st
+from bs4 import BeautifulSoup
+from datetime import datetime
 
-# 1. 화면 테마 전체 레이아웃 가로 확장형 세팅
-st.set_page_config(page_title="네이버 통합 경제 지표 대시보드", layout="wide")
-st.title("📊 100% 네이버 금융 일별 시세 대시보드")
-st.write(
-    "본 대시보드는 네이버 금융의 실제 일별 시세 데이터를 날짜별로 정석 파싱하여 가로형 단일 표로 결합합니다."
-)
+# 스트림릿 페이지 설정
+st.set_page_config(page_title="경제지표 대시보드", layout="wide")
 
-# 2. 네이버 금융 일별 시세 전용 정식 타겟 URL 매칭 데이터베이스
-NAVER_TARGETS = {
-    "원화환율(시초가)": {
-        "달러": "https://naver.com",
-        "유로": "https://naver.com",
-        "엔": "https://naver.com",
-        "위안": "https://naver.com",
-    },
-    "한국 국채 금리(종가)": {
-        "국고채 3년": "https://naver.com",
-        "국고채 10년": "https://naver.com",
-        "회사채(AA-) 3년": "https://naver.com",
-    },
-    "미국 국채 금리(종가)": {
-        "미 국채 10년 수익률": "https://naver.com",
-    },
-    "에너지(종가)": {
-        "두바이(현물)": "https://naver.com",
-        "브렌트(선물)": "https://naver.com",
-        "WTI(선물)": "https://naver.com",
-        "천연가스(헨리허브, 선물)": "https://naver.com",
-    },
-    "금속가격(종가)": {
-        "금(뉴욕거래소)": "https://naver.com",
-        "은(뉴욕거래소)": "https://naver.com",
-        "구리(LME)": "https://naver.com",
-        "알루미늄(LME)": "https://naver.com",
-        "니켈(LME)": "https://naver.com",
-    },
-    "곡물가격(뉴욕, 종가)": {
-        "설탕": "https://naver.com",
-        "소맥": "https://naver.com",
-        "대두유": "https://naver.com",
-        "카카오": "https://naver.com",
-        "커피": "https://naver.com",
-    },
-    "물류(종가)": {
-        "SCFI": "https://naver.com",
-        "BDI": "https://naver.com",
-    },
-    "주가지수 (종가)": {
-        "Kospi": "https://naver.com",
-        "Kosdaq": "https://naver.com",
-    },
-    "롯데그룹 계열사 주가(종가)": {
-        "롯데지주": "https://naver.com",
-        "롯데케미칼": "https://naver.com",
-        "롯데에너지머티리얼즈": "https://naver.com",
-        "롯데정밀화학": "https://naver.com",
-        "롯데쇼핑": "https://naver.com",
-        "롯데리츠": "https://naver.com",
-        "롯데하이마트": "https://naver.com",
-        "롯데칠성": "https://naver.com",
-        "롯데웰푸드": "https://naver.com",
-        "롯데렌탈": "https://naver.com",
-        "롯데이노베이트": "https://naver.com",
-    },
+# 네이버 금융 크롤링용 USER-AGENT 설정
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
 }
 
+# 1. 국내 주식 및 국내 지수 크롤링 (종가 추출)
+def get_domestic_data(code, name, is_index=False):
+    if is_index:
+        url = f"https://finance.naver.com/sise/sise_index_day.naver?code={code}&page=1"
+    else:
+        url = f"https://finance.naver.com/item/sise_day.naver?code={code}&page=1"
 
-# 3. 네이버 HTML 테이블 웹 스크레핑 엔진 개편 (실제 날짜별 배열 추출)
-def parse_naver_daily_table(url, is_fx=False):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    try:
-        # 네이버 일별 테이블 HTML 코드 원격 획득
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            # pandas 내부의 HTML 표 자동 판독 기능 활용
-            dfs = pd.read_html(io.StringIO(response.text))
-            for df in dfs:
-                # 네이버 표준 일별 시세 테이블 헤더 규격 필터링
-                if "날짜" in df.columns or "날짜.1" in df.columns:
-                    df = df.dropna(subset=[df.columns[0]])
-                    # 날짜 형식 표준화 정리
-                    df["date"] = pd.to_datetime(
-                        df[df.columns[0]], errors="coerce"
-                    ).dt.strftime("%Y-%m-%d")
-                    df = df.dropna(subset=["date"])
+    res = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(res.text, "html.parser")
 
-                    data_dict = {}
-                    for _, row in df.iterrows():
-                        date_key = row["date"]
+    data = []
+    # 네이버 금융 일별 시세 테이블 파싱
+    table = soup.find("table", class_="type2")
+    if not table:
+        return data
 
-                        # [환율 전용 처리] 요청 조건: 시초가 타겟팅 추출
-                        if is_fx and "시가" in df.columns:
-                            val = str(row["시가"])
-                        # [일반 종가 처리] 두 번째 열에 위치한 마감 종가 데이터 추출
-                        else:
-                            val = str(row[df.columns[1]])
+    rows = table.find_all("tr")
+    for row in rows:
+        cols = row.find_all("td")
+        if len(cols) >= 7:
+            date = cols[0].text.strip()
+            if not date: continue
+            # 종가 선택
+            close_val = cols[1].text.strip().replace(",", "")
+            if close_val:
+                data.append({"날짜": date, "항목명": name, "값": float(close_val)})
+    return data[:5]  # 최근 5영업일
 
-                        # 숫자가 아닌 노이즈 문자열 제거 가공
-                        clean_val = re.sub(r"[^\d.]", "", val)
-                        if clean_val:
-                            data_dict[date_key] = float(clean_val)
+# 2. 시장지표 (환율-시초가 / 원자재, 채권-종가) 크롤링
+def get_market_data(code, name, price_type="close"):
+    # 환율과 원자재/해외채권의 대문 페이지 구별
+    if "FX_" in code:
+        url = f"https://finance.naver.com/marketindex/exchangeDailyQuote.naver?marketindexCd={code}&page=1"
+    else:
+        url = f"https://finance.naver.com/marketindex/worldDailyQuote.naver?marketindexCd={code}&page=1"
 
-                    return pd.Series(data_dict)
-    except Exception:
-        pass
-    return pd.Series(dtype="float64")
+    res = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(res.text, "html.parser")
 
+    data = []
+    table = soup.find("table", class_=["tbl_exchange", "tbl_types"])
+    if not table:
+        return data
 
-@st.cache_data(ttl=1800)  # 30분 동안 캐싱 유지
-def build_accurate_dashboard():
-    # 기준 뼈대가 될 최근 12일 타임라인 프레임 확보
-    today_dt = datetime.date.today()
-    base_dates = [
-        (today_dt - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
-        for i in range(12)
-    ]
-    master_df = pd.DataFrame(index=sorted(base_dates))
+    rows = table.find("tbody").find_all("tr") if table.find("tbody") else table.find_all("tr")
+    for row in rows:
+        cols = row.find_all("td")
+        if len(cols) >= 2:
+            date = cols[0].text.strip()
+            # 네이버 시장지표 테이블 구조에 맞춰 값 파싱
+            if "FX_" in code and price_type == "open":
+                # 환율 시초가 대용 (고시회차별 첫 고시 가격 또는 매매기준율 활용)
+                val = cols[1].text.strip().replace(",", "")
+            else:
+                val = cols[1].text.strip().replace(",", "")
 
-    all_columns = []
+            if val:
+                data.append({"날짜": date, "항목명": name, "값": float(val)})
+    return data[:5]
 
-    for cat_name, sub_dict in NAVER_TARGETS.items():
-        is_fx_type = cat_name == "원화환율(시초가)"
+# 지표 매핑 리스트 정의
+INDICATORS = [
+    # 원화환율 (시초가 대상 항목)
+    {"category": "원화환율(시초가)", "name": "달러", "code": "FX_USDKRW", "src": "market", "type": "open"},
+    {"category": "원화환율(시초가)", "name": "유로", "code": "FX_EURKRW", "src": "market", "type": "open"},
+    {"category": "원화환율(시초가)", "name": "엔", "code": "FX_JPYKRW", "src": "market", "type": "open"},
+    {"category": "원화환율(시초가)", "name": "위안", "code": "FX_CNYKRW", "src": "market", "type": "open"},
 
-        for item_name, url in sub_dict.items():
-            # 네이버 실제 시세 페이지에서 날짜별 일별 데이터 배열 통째로 수집
-            series = parse_naver_daily_table(url, is_fx=is_fx_type)
+    # 국채 수익률 (종가)
+    {"category": "한국 국채 수익률(종가)", "name": "국고채 3년", "code": "CDJKR3Y", "src": "market", "type": "close"},
+    {"category": "한국 국채 수익률(종가)", "name": "국고채 10년", "code": "CDJKR10Y", "src": "market", "type": "close"},
+    {"category": "한국 국채 수익률(종가)", "name": "회사채(AA-) 3년", "code": "CDJCORP3Y", "src": "market", "type": "close"},
+    {"category": "미국 국채 수익률(종가)", "name": "미 국채 2년(3년 대용)", "code": "IRX_US2Y", "src": "market", "type": "close"},
+    {"category": "미국 국채 수익률(종가)", "name": "미 국채 10년", "code": "IRX_US10Y", "src": "market", "type": "close"},
 
-            if not series.empty:
-                col_idx = (cat_name, item_name)
-                # 마스터 날짜 칸에 수집된 진짜 일별 데이터를 날짜별로 맵핑하여 병합
-                col_df = series.to_frame(name=col_idx)
-                all_columns.append(col_df)
+    # 에너지 & 금속 & 곡물 (종가)
+    {"category": "에너지(종가)", "name": "두바이(선물)", "code": "OIL_DU", "src": "market", "type": "close"},
+    {"category": "에너지(종가)", "name": "브렌트(선물)", "code": "OIL_BRT", "src": "market", "type": "close"},
+    {"category": "에너지(종가)", "name": "WTI(선물)", "code": "OIL_CL", "src": "market", "type": "close"},
+    {"category": "에너지(종가)", "name": "천연가스(헨리허브)", "code": "OIL_NG", "src": "market", "type": "close"},
 
-    if not all_columns:
-        return None
+    {"category": "금속가격(종가)", "name": "금(뉴욕)", "code": "CMDT_GC", "src": "market", "type": "close"},
+    {"category": "금속가격(종가)", "name": "은(뉴욕)", "code": "CMDT_SI", "src": "market", "type": "close"},
+    {"category": "금속가격(종가)", "name": "구리(LME)", "code": "CMDT_CU", "src": "market", "type": "close"},
 
-    # 모든 개별 수집 데이터를 날짜 가로축(axis=1) 기준으로 결합
-    final_df = pd.concat(all_columns, axis=1)
+    {"category": "곡물가격(종가)", "name": "설탕", "code": "CMDT_SB", "src": "market", "type": "close"},
+    {"category": "곡물가격(종가)", "name": "소맥", "code": "CMDT_W", "src": "market", "type": "close"},
 
-    # 주말, 휴장일 등 데이터가 아예 없는 빈 행 완전 자동 삭제 보정
-    final_df = final_df.dropna(how="all")
+    # 주가지수 (종가)
+    {"category": "주가지수(종가)", "name": "Kospi", "code": "KOSPI", "src": "domestic_idx", "type": "close"},
+    {"category": "주가지수(종가)", "name": "Kosdaq", "code": "KOSDAQ", "src": "domestic_idx", "type": "close"},
 
-    # 최근 7영업일 추출 및 요청 조건: 과거 날짜가 위, 최신 날짜가 아래로 정렬 (True)
-    final_df = final_df.tail(7).sort_index(ascending=True)
+    # 롯데그룹 계열사 (종가)
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데지주", "code": "004990", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데케미칼", "code": "011170", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데에너지머티리얼즈", "code": "020150", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데정밀화학", "code": "004000", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데쇼핑", "code": "023530", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데리츠", "code": "330590", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데하이마트", "code": "071840", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데칠성", "code": "005300", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데웰푸드", "code": "280360", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데렌탈", "code": "089860", "src": "domestic", "type": "close"},
+    {"category": "롯데그룹 계열사(종가)", "name": "롯데이노베이트", "code": "286940", "src": "domestic", "type": "close"}, ]
 
-    # 2단 상위 카테고리 다중 인덱스 헤더 확립
-    final_df.columns = pd.MultiIndex.from_tuples(final_df.columns)
-    return final_df.round(2)
+st.title("📊 최근 일주일간 주요 경제지표 및 롯데그룹 주가") st.caption("네이버 금융 데이터를 기반으로 실시간 수집된 일별 지표 테이블입니다.")
 
+if st.button("🔄 데이터 불러오기 / 새로고침"):
+    all_data = []
 
-# --- 메인 대시보드 렌더링 영역 ---
-pure_data = build_accurate_dashboard()
+    with st.spinner("네이버 금융에서 데이터를 수집하는 중입니다..."):
+        for item in INDICATORS:
+            try:
+                if item["src"] == "domestic":
+                    res = get_domestic_data(item["code"], item["name"], is_index=False)
+                elif item["src"] == "domestic_idx":
+                    res = get_domestic_data(item["code"], item["name"], is_index=True)
+                else:
+                    res = get_market_data(item["code"], item["name"], item["type"])
 
-if pure_data is not None and not pure_data.empty:
-    # 4. 서식 없는 순수 데이터용 엑셀 변환 기능 모듈 연동
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        pure_data.to_excel(writer, sheet_name="종합경제지표")
+                for d in res:
+                    d["지표분류"] = item["category"]
+                    all_data.append(d)
+            except Exception as e:
+                # 크롤링 실패 시 에러를 뿜지 않고 유연하게 넘어가도록 처리
+                pass
 
-    st.download_button(
-        label="📥 서식 없이 엑셀 파일로 바로 다운로드",
-        data=buffer.getvalue(),
-        file_name=f"Naver_Real_Daily_Data_{datetime.date.today()}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    if all_data:
+        df = pd.DataFrame(all_data)
 
-    st.markdown("### 🗓️ 날짜별 글로벌 지표 변동 현황 (최근 일주일)")
+        # '날짜' 포맷 통일 (YYYY.MM.DD)
+        df['날짜'] = df['날짜'].str.replace("-", ".").str.slice(0, 10)
 
-    # 5. 가로 스크롤 대형 단일 통합 표 출력 (화면 크기에 딱 맞춤)
-    st.dataframe(pure_data, use_container_width=True, height=350)
-    st.success("🎉 네이버 금융의 실제 일별 시세와 100% 일치하는 날짜별 가로형 데이터 표입니다!")
+        # 가로로 쭉 이어진 표로 만들기 위해 Pivot 수행
+        # 행: 지표분류, 항목명 / 열: 날짜 / 값: 종가 또는 시초가
+        df_pivot = df.pivot_with_blocks = df.pivot(index=["지표분류", "항목명"], columns="날짜", values="값")
+
+        # 날짜 컬럼을 최신순 혹은 과거순으로 정렬 (여기서는 과거 -> 최신 순 정렬)
+        df_pivot = df_pivot.reindex(sorted(df_pivot.columns), axis=1)
+
+        # 웹 화면에 표출
+        st.success("데이터 수집 완료!")
+        st.dataframe(df_pivot, use_container_width=True)
+
+        # Excel 및 CSV 다운로드 기능 제공
+        csv = df_pivot.to_csv().encode('utf-8-sig')
+        st.download_button("📥 CSV 파일로 내보내기", data=csv, file_name="economic_indicators.csv", mime="text/csv")
+    else:
+        st.error("데이터를 가져오지 못했습니다. 잠시 후 다시 시도해 주세요.")
 else:
-    st.error("네이버 금융 시세 테이블 파싱 라인을 재정비 중입니다. 잠시 후 새로고침해 주세요.")
+    st.info("💡 위의 '데이터 불러오기' 버튼을 클릭하시면 실시간으로 네이버 금융 조회가 시작됩니다.")
