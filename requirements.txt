@@ -2,4 +2,3 @@ yfinance
 pandas
 xlsxwriter
 requests
-pandas_datareader
