@@ -6,14 +6,12 @@ import streamlit as st
 import yfinance as yf
 
 # 1. 화면 레이아웃 및 제목 설정
-st.set_page_config(page_title="통합 경제 지표 대시보드", layout="wide")
-st.title("📊 BOK ECOS 공식 연동형 경제 지표 대시보드")
-st.write(
-    "환율과 국내 금리는 한국은행 ECOS 공식 데이터이며, 글로벌 지표는 Yahoo Finance 데이터입니다."
-)
+st.set_page_config(page_title="종합 경제 지표 대시보드", layout="wide")
+st.title("📊 글로벌 경제 지표 & 환율 대시보드 (분리형)")
+st.write("상단은 한국은행 ECOS 공식 데이터이며, 하단은 Yahoo Finance 글로벌 데이터입니다.")
 
-# 🔑 [주의] 복사할 때 문자열 앞뒤에 눈에 보이지 않는 공백(띄어쓰기)이 들어가지 않도록 정확히 붙여넣어 주세요!
-ECOS_API_KEY = "ZXBH7LM5BB9NFLDW0DEA"
+# 🔑 한국은행 ECOS API 인증키를 여기에 입력하세요.
+ECOS_API_KEY = "YOUR_ECOS_API_KEY"
 
 # 2. 야후 파이낸스로 가져올 글로벌 지표 정의
 YAHOO_CATEGORIES = {
@@ -92,23 +90,16 @@ YAHOO_CATEGORIES = {
 }
 
 
-# 3. 한국은행 ECOS API 호출 전용 함수 (인증 우회 주소 구조 체계 최적화 완료)
+# 3. 한국은행 ECOS API 호출 전용 함수
 def fetch_ecos_data(stat_code, item_code, start_date, end_date):
-    # [핵심 변경] 한국은행 가이드 표준에 맞추어 주소 문자열 슬래시(/) 레이아웃 순서 전면 재정렬
-    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{ECOS_API_KEY.strip()}/json/kr/1/100/{stat_code}/D/{start_date}/{end_date}/{item_code}"
+    url = f"https://bok.or.kr{ECOS_API_KEY.strip()}/json/kr/1/100/{stat_code}/D/{start_date}/{end_date}/{item_code}"
     try:
         response = requests.get(url, timeout=10)
         json_data = response.json()
-        
-        # 한국은행 에러 코드가 잡힐 경우 터미널 알림 기능 강화
-        if "RESULT" in json_data and json_data["RESULT"]["CODE"] in ["INFO-100", "INFO-200"]:
-            return pd.Series(dtype="float64")
-            
         if "StatisticSearch" in json_data and "row" in json_data["StatisticSearch"]:
             rows = json_data["StatisticSearch"]["row"]
             df = pd.DataFrame(rows)
             df.columns = [col.lower() for col in df.columns]
-            
             df["time"] = pd.to_datetime(df["time"], format="%Y%m%d")
             df["data_value"] = pd.to_numeric(df["data_value"])
             df = df.set_index("time")
@@ -118,33 +109,26 @@ def fetch_ecos_data(stat_code, item_code, start_date, end_date):
     return pd.Series(dtype="float64")
 
 
+# 4. [표 1] 한국은행 전용 데이터 수집 함수
 @st.cache_data(ttl=600)
-def fetch_all_combined_data():
+def get_ecos_dataframe():
     today_dt = datetime.date.today()
-    start_dt = today_dt - datetime.timedelta(days=18)
-
+    start_dt = today_dt - datetime.timedelta(days=15)
     start_str = start_dt.strftime("%Y%m%d")
     end_str = today_dt.strftime("%Y%m%d")
 
-    # 대시보드 기본 시간축 데이터베이스 빌드
-    base_df = yf.download("^KS11", start=start_dt, end=today_dt, progress=False)
-    if base_df.empty:
-        idx = pd.date_range(start=start_dt, end=today_dt)
-        master_df = pd.DataFrame(index=idx)
-    else:
-        master_df = pd.DataFrame(index=base_df.index)
+    ecos_dfs = []
 
-    # --- [A] 한국은행 ECOS 실시간 조회 및 결합 영역 ---
-    # 1. 원화환율 (시장 코드: 022Y013)
+    # 1) 원화환율 (022Y013)
     exchange_mapping = {"달러": "0000001", "유로": "0000003", "엔": "0000002", "위안": "0000053"}
     for name, item_cd in exchange_mapping.items():
         series = fetch_ecos_data("022Y013", item_cd, start_str, end_str)
-        col_idx = ("원화환율(시초가)", name)
         if not series.empty:
-            master_df[col_idx] = master_df.index.map(series)
-            master_df[col_idx] = master_df[col_idx].ffill()
+            df = series.to_frame()
+            df.columns = pd.MultiIndex.from_tuples([("원화환율(시초가)", name)])
+            ecos_dfs.append(df)
 
-    # 2. 국내 금리 (시장 코드: 060Y001)
+    # 2) 국내 금리 (060Y001)
     bond_mapping = {
         "국고채 3년": "010200000",
         "국고채 10년": "010210000",
@@ -152,57 +136,89 @@ def fetch_all_combined_data():
     }
     for name, item_cd in bond_mapping.items():
         series = fetch_ecos_data("060Y001", item_cd, start_str, end_str)
-        col_idx = ("한국 국채 금리(종가)", name)
         if not series.empty:
-            master_df[col_idx] = master_df.index.map(series)
-            master_df[col_idx] = master_df[col_idx].ffill()
+            df = series.to_frame()
+            df.columns = pd.MultiIndex.from_tuples([("한국 국채 금리(종가)", name)])
+            ecos_dfs.append(df)
 
-    # --- [B] 글로벌 경제 지표 데이터 병합 영역 ---
+    if not ecos_dfs:
+        return None
+
+    ecos_master = pd.concat(ecos_dfs, axis=1)
+    ecos_master = ecos_master.dropna(how="all").ffill()
+    ecos_master = ecos_master.tail(7).sort_index(ascending=True)
+    ecos_master.index = ecos_master.index.strftime("%Y-%m-%d")
+    return ecos_master.round(2)
+
+
+# 5. [표 2] 야후 파이낸스 전용 데이터 수집 함수
+@st.cache_data(ttl=600)
+def get_yahoo_dataframe():
+    today_dt = datetime.date.today()
+    start_dt = today_dt - datetime.timedelta(days=15)
+
+    yahoo_dfs = []
+
     for cat_name, cat_info in YAHOO_CATEGORIES.items():
         data_type = cat_info["type"]
         for display_name, ticker in cat_info["tickers"].items():
             try:
                 df_yf = yf.download(ticker, start=start_dt, end=today_dt, progress=False)
                 if not df_yf.empty and data_type in df_yf.columns:
-                    col_idx = (cat_name, display_name)
-                    yf_series = df_yf[data_type].copy()
-                    master_df[col_idx] = master_df.index.map(yf_series.to_dict())
-                    master_df[col_idx] = master_df[col_idx].ffill()
+                    col_data = df_yf[data_type].to_frame()
+                    col_data.columns = pd.MultiIndex.from_tuples([(cat_name, display_name)])
+                    yahoo_dfs.append(col_data)
             except Exception:
                 pass
 
-    # 완전히 빈 데이터 행 제외 후 최근 7영업일 과거순 정렬 정립
-    master_df = master_df.dropna(how="all")
-    master_df = master_df.tail(7).sort_index(ascending=True)
-    master_df.columns = pd.MultiIndex.from_tuples(master_df.columns)
-    master_df.index = master_df.index.strftime("%Y-%m-%d")
+    if not yahoo_dfs:
+        return None
 
-    return master_df
+    yahoo_master = pd.concat(yahoo_dfs, axis=1)
+    yahoo_master = yahoo_master.dropna(how="all").ffill()
+    yahoo_master = yahoo_master.tail(7).sort_index(ascending=True)
+    yahoo_master.index = yahoo_master.index.strftime("%Y-%m-%d")
+    return yahoo_master.round(2)
 
 
-# 메인 루틴 처리 시작
-final_data = fetch_all_combined_data()
+# --- 화면 렌더링 영역 ---
 
-if final_data is not None and not final_data.empty:
-    # 엑셀 다운로드 포맷 구성
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        final_data.to_excel(writer, sheet_name="종합경제지표")
+# 🛑 [1번 표] 한국은행 데이터 렌더링
+st.subheader("📌 1. 한국은행 고시 데이터 (환율 & 국내금리)")
+ecos_df = get_ecos_dataframe()
 
+if ecos_df is not None and not ecos_df.empty:
+    # 엑셀 다운로드 파일 메모리 빌드
+    buf1 = io.BytesIO()
+    with pd.ExcelWriter(buf1, engine="xlsxwriter") as writer:
+        ecos_df.to_excel(writer, sheet_name="한국은행_지표")
     st.download_button(
-        label="📥 서식 없이 엑셀 파일로 바로 다운로드",
-        data=buffer.getvalue(),
-        file_name=f"ecos_economy_data_{datetime.date.today()}.xlsx",
+        label="📥 한국은행 데이터 엑셀 다운로드",
+        data=buf1.getvalue(),
+        file_name=f"BOK_data_{datetime.date.today()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
-    st.markdown("### 🗓️ 날짜별 글로벌 지표 변동 현황 (최근 일주일)")
-    st.dataframe(final_data, use_container_width=True, height=350)
-    
-    # 한국은행 연동 성공 시 체크 메시지 노출 분기
-    if ("원화환율(시초가)", "달러") in final_data.columns and not pd.isna(final_data[("원화환율(시초가)", "달러")].iloc[-1]):
-        st.success("🎉 한국은행 ECOS 데이터와 글로벌 지표 결합이 완벽히 완료되었습니다!")
-    else:
-        st.warning("⚠️ 글로벌 지표는 나왔으나, 한국은행 인증키 입력 상태나 첫 호출 지연 상태를 확인해 주세요. (1~2분 후 새로고침 필요)")
+    st.dataframe(ecos_df, use_container_width=True, height=260)
 else:
-    st.error("데이터 결합을 실패했습니다. 잠시 후 새로고침해 주세요.")
+    st.info("💡 한국은행 API를 불러오는 중입니다. 키 값이 정확한데도 이 문구가 지속된다면 오늘이 한국은행 시스템 점검일이거나 신규 인증키 승인 대기 상태일 수 있습니다.")
+
+st.markdown("---")
+
+# 🛑 [2번 표] 야후 파이낸스 글로벌 데이터 렌더링
+st.subheader("📌 2. 글로벌 금융시장 데이터 (주가, 원자재, 물류 등)")
+yahoo_df = get_yahoo_dataframe()
+
+if yahoo_df is not None and not yahoo_df.empty:
+    # 엑셀 다운로드 파일 메모리 빌드
+    buf2 = io.BytesIO()
+    with pd.ExcelWriter(buf2, engine="xlsxwriter") as writer:
+        yahoo_df.to_excel(writer, sheet_name="글로벌_지표")
+    st.download_button(
+        label="📥 글로벌 데이터 엑셀 다운로드",
+        data=buf2.getvalue(),
+        file_name=f"Global_data_{datetime.date.today()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    st.dataframe(yahoo_df, use_container_width=True, height=280)
+else:
+    st.error("야후 파이낸스 데이터를 가져오는 데 실패했습니다.")
