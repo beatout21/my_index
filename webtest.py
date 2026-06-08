@@ -13,7 +13,7 @@ st.write(
 )
 
 # 🔑 한국은행 ECOS API 인증키를 여기에 입력하세요.
-ECOS_API_KEY = "YOUR_ECOS_API_KEY"
+ECOS_API_KEY = "ZXBH7LM5BB9NFLDW0DEA"
 
 # 2. 구글 파이낸스 연동을 위한 안전한 티커 매칭 데이터베이스
 GOOGLE_CATEGORIES = {
