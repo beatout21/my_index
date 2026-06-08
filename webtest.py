@@ -7,13 +7,13 @@ import yfinance as yf
 
 # 1. 화면 레이아웃 설정
 st.set_page_config(page_title="통합 경제 지표 대시보드", layout="wide")
-st.title("📊 BOK ECOS 공식 연동형 경제 지표 대시보드")
+st.title("📊 경제 지표 대시보드")
 st.write(
     "환율과 국내 금리는 한국은행 ECOS 공식 데이터이며, 글로벌 지표는 Yahoo Finance 데이터입니다."
 )
 
 # 🔑 한국은행 ECOS API 인증키를 여기에 입력하세요.
-ECOS_API_KEY = "YOUR_ECOS_API_KEY"
+ECOS_API_KEY = "ZXBH7LM5BB9NFLDW0DEA"
 
 # 2. 야후 파이낸스로 가져올 나머지 글로벌 지표 정의
 YAHOO_CATEGORIES = {
