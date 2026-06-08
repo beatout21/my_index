@@ -117,7 +117,8 @@ INDICATORS = [
     {"category": "롯데그룹 계열사(종가)", "name": "롯데렌탈", "code": "089860", "src": "domestic", "type": "close"},
     {"category": "롯데그룹 계열사(종가)", "name": "롯데이노베이트", "code": "286940", "src": "domestic", "type": "close"}, ]
 
-st.title("📊 최근 일주일간 주요 경제지표 및 롯데그룹 주가") st.caption("네이버 금융 데이터를 기반으로 실시간 수집된 일별 지표 테이블입니다.")
+st.title("📊 최근 일주일간 주요 경제지표 및 롯데그룹 주가") 
+st.caption("네이버 금융 데이터를 기반으로 실시간 수집된 일별 지표 테이블입니다.")
 
 if st.button("🔄 데이터 불러오기 / 새로고침"):
     all_data = []
