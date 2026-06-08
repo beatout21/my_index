@@ -11,7 +11,7 @@ st.title("📊 글로벌 경제 지표 & 환율 대시보드 (분리형)")
 st.write("상단은 한국은행 ECOS 공식 데이터이며, 하단은 Yahoo Finance 글로벌 데이터입니다.")
 
 # 🔑 한국은행 ECOS API 인증키를 여기에 입력하세요.
-ECOS_API_KEY = "YOUR_ECOS_API_KEY"
+ECOS_API_KEY = "ZXBH7LM5BB9NFLDW0DEA"
 
 # 2. 야후 파이낸스로 가져올 글로벌 지표 정의
 YAHOO_CATEGORIES = {
