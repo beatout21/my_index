@@ -133,9 +133,17 @@ def fetch_total_flat_data():
         return None
 
     total_df = pd.concat(all_columns, axis=1)
-    total_df = total_df.dropna(how="all").sort_index(ascending=False)
-    total_df = total_df.head(7)
 
+    # 1. 데이터가 완전히 없는 휴일 행 먼저 삭제
+    total_df = total_df.dropna(how="all")
+
+    # 2. 가장 최근 7일(행)의 데이터만 슬라이싱하여 추출
+    total_df = total_df.tail(7)
+
+    # 3. 핵심 수정: 과거 날짜가 위, 최근 날짜가 아래로 오도록 정렬 (오름차순)
+    total_df = total_df.sort_index(ascending=True)
+
+    # 날짜 인덱스 포맷 정리
     total_df.index = total_df.index.strftime("%Y-%m-%d")
     return total_df.round(2)
 
@@ -144,8 +152,7 @@ def fetch_total_flat_data():
 flat_data = fetch_total_flat_data()
 
 if flat_data is not None:
-    # 3. 엑셀 다운로드 기능 추가 (서식 없는 순수 데이터만 추출)
-    # 데이터프레임을 메모리 상에서 엑셀 파일 형태로 변환
+    # 엑셀 파일 변환 작업 (메모리 상에서 빌드)
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         flat_data.to_excel(writer, sheet_name="경제지표")
@@ -160,8 +167,8 @@ if flat_data is not None:
 
     st.markdown("### 🗓️ 날짜별 글로벌 지표 변동 현황 (최근 일주일)")
 
-    # 4. 가로형 표 렌더링
+    # 가로형 표 렌더링
     st.dataframe(flat_data, use_container_width=True, height=350)
-    st.success("모든 카테고리가 가로형 표로 결합 완료되었습니다!")
+    st.success("모든 카테고리가 날짜 순방향(최근 날짜가 아래로)으로 결합 완료되었습니다!")
 else:
     st.error("데이터 수집 서버에 일시적인 문제가 생겼습니다.")
