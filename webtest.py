@@ -1,4 +1,5 @@
 import datetime
+import io
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -107,7 +108,7 @@ CATEGORIES = {
 @st.cache_data(ttl=1800)
 def fetch_total_flat_data():
     today = datetime.date.today()
-    start_date = today - datetime.timedelta(days=12)  # 충분한 일수 확보
+    start_date = today - datetime.timedelta(days=12)
 
     all_columns = []
 
@@ -121,8 +122,6 @@ def fetch_total_flat_data():
                 )
                 if not df.empty and data_type in df.columns:
                     col_data = df[data_type].copy()
-
-                    # 핵심: [상위 카테고리, 개별 항목] 형태로 이름 구조 튜플 매칭
                     col_data.columns = pd.MultiIndex.from_tuples(
                         [(cat_name, display_name)]
                     )
@@ -133,14 +132,10 @@ def fetch_total_flat_data():
     if not all_columns:
         return None
 
-    # 모든 데이터를 가로(axis=1)로 통짜 병합
     total_df = pd.concat(all_columns, axis=1)
-
-    # 데이터가 아예 없는 주말/공휴일 행 삭제 및 최신날짜순 정렬
     total_df = total_df.dropna(how="all").sort_index(ascending=False)
-    total_df = total_df.head(7)  # 최근 일주일(영업일 기준 7일) 데이터 유지
+    total_df = total_df.head(7)
 
-    # 날짜 인덱스 가독성 정리
     total_df.index = total_df.index.strftime("%Y-%m-%d")
     return total_df.round(2)
 
@@ -148,13 +143,25 @@ def fetch_total_flat_data():
 # 데이터 로드
 flat_data = fetch_total_flat_data()
 
-# 3. 단 하나의 거대한 가로형 표 렌더링
 if flat_data is not None:
+    # 3. 엑셀 다운로드 기능 추가 (서식 없는 순수 데이터만 추출)
+    # 데이터프레임을 메모리 상에서 엑셀 파일 형태로 변환
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        flat_data.to_excel(writer, sheet_name="경제지표")
+
+    # 상단 다운로드 버튼 배치
+    st.download_button(
+        label="📥 서식 없이 엑셀 파일로 바로 다운로드",
+        data=buffer.getvalue(),
+        file_name=f"economy_data_{datetime.date.today()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
     st.markdown("### 🗓️ 날짜별 글로벌 지표 변동 현황 (최근 일주일)")
 
-    # 대용량 표를 컨테이너 너비에 맞게 배치 (가로 스크롤 활성화)
+    # 4. 가로형 표 렌더링
     st.dataframe(flat_data, use_container_width=True, height=350)
-
-    st.success("모든 카테고리가 단 하나의 가로형 표로 결합 완료되었습니다!")
+    st.success("모든 카테고리가 가로형 표로 결합 완료되었습니다!")
 else:
     st.error("데이터 수집 서버에 일시적인 문제가 생겼습니다.")
