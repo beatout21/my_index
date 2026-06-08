@@ -1,35 +1,22 @@
 import datetime
 import io
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 
-# 1. 화면 테마 전체 레이아웃 가로 확장형 세팅
+# 1. 화면 레이아웃 설정
 st.set_page_config(page_title="통합 경제 지표 대시보드", layout="wide")
-st.title("📊 가로 통합형 글로벌 경제 지표 & 환율")
+st.title("📊 BOK ECOS 공식 연동형 경제 지표 대시보드")
 st.write(
-    "모든 지표를 하나의 표로 결합했습니다. 우측으로 스크롤하여 전체 데이터를 확인하세요."
+    "환율과 국내 금리는 한국은행 ECOS 공식 데이터이며, 글로벌 지표는 Yahoo Finance 데이터입니다."
 )
 
-# 2. 카테고리 및 티커 구조 (순서 유지)
-CATEGORIES = {
-    "원화환율(시초가)": {
-        "type": "Open",
-        "tickers": {
-            "달러": "KRW=X",
-            "유로": "EURKRW=X",
-            "엔": "JPYKRW=X",
-            "위안": "CNYKRW=X",
-        },
-    },
-    "한국 국채 금리(종가)": {
-        "type": "Close",
-        "tickers": {
-            "국고채 3년 (대체)": "114260.KS",
-            "국고채 10년 (대체)": "365780.KS",
-            "회사채(AA-) 3년 (대체)": "273130.KS",
-        },
-    },
+# 🔑 한국은행 ECOS API 인증키를 여기에 입력하세요.
+ECOS_API_KEY = "YOUR_ECOS_API_KEY"
+
+# 2. 야후 파이낸스로 가져올 나머지 글로벌 지표 정의
+YAHOO_CATEGORIES = {
     "미국 국채 금리(종가)": {
         "type": "Close",
         "tickers": {
@@ -43,7 +30,7 @@ CATEGORIES = {
             "두바이(현물, 대체)": "2039.T",
             "브렌트(선물)": "BZ=F",
             "WTI(선물)": "CL=F",
-            "천연가스(헨리허브, 선물)": "NG=F",
+            "천연가스(선물)": "NG=F",
         },
     },
     "금속가격(종가)": {
@@ -105,70 +92,113 @@ CATEGORIES = {
 }
 
 
+# 3. 한국은행 ECOS API 호출 전용 함수 정의
+def fetch_ecos_data(stat_code, item_code, start_date, end_date, column_name):
+    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{ECOS_API_KEY}/json/kr/1/100/{stat_code}/D/{start_date}/{end_date}/{item_code}"
+    try:
+        response = requests.get(url, timeout=10)
+        json_data = response.json()
+        if "StatisticSearch" in json_data:
+            rows = json_data["StatisticSearch"]["row"]
+            # 날짜와 값 추출하여 데이터프레임 빌드
+            df = pd.DataFrame(rows)
+            df["TIME"] = pd.to_datetime(df["TIME"], format="%Y%m%d")
+            df["DATA_VALUE"] = pd.to_numeric(df["DATA_VALUE"])
+            df = df.set_index("TIME")[["DATA_VALUE"]]
+            df.columns = column_name
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
 @st.cache_data(ttl=1800)
-def fetch_total_flat_data():
-    today = datetime.date.today()
-    start_date = today - datetime.timedelta(days=12)
+def fetch_all_combined_data():
+    # 날짜 범위 확보 (주말 포함 데이터 정합성을 위해 충분한 14일 확보)
+    today_dt = datetime.date.today()
+    start_dt = today_dt - datetime.timedelta(days=14)
 
-    all_columns = []
+    start_str = start_dt.strftime("%Y%m%d")
+    end_str = today_dt.strftime("%Y%m%d")
 
-    for cat_name, cat_info in CATEGORIES.items():
+    all_dfs = []
+
+    # --- [A] 한국은행 ECOS 데이터 수집 영역 ---
+    # 1. 원화환율 (시초가 - ECOS상 당일 최초 고시 환율 기준 매핑)
+    exchange_mapping = {"달러": "0000001", "유로": "0000003", "엔": "0000002", "위안": "0000053"}
+    for name, item_cd in exchange_mapping.items():
+        # 통계표 731Y001 : 주요국 통화의 대원화환율
+        col_idx = pd.MultiIndex.from_tuples([("원화환율(시초가)", name)])
+        df_ecos = fetch_ecos_data("731Y001", item_cd, start_str, end_str, col_idx)
+        if not df_ecos.empty:
+            all_dfs.append(df_ecos)
+
+    # 2. 국내 금리 (종가 - 당일 최종 고시 금리)
+    bond_mapping = {
+        "국고채 3년": "010200000",
+        "국고채 10년": "010210000",
+        "회사채(AA-) 3년": "010300000",
+    }  #
+    for name, item_cd in bond_mapping.items():
+        # 통계표 817Y002 : 시장금리(일별)
+        if "국고채" in name:
+            col_idx = pd.MultiIndex.from_tuples([("한국 국채 금리(종가)", name)])
+        else:
+            col_idx = pd.MultiIndex.from_tuples([("한국 국채 금리(종가)", name)])
+        df_ecos = fetch_ecos_data("817Y002", item_cd, start_str, end_str, col_idx)
+        if not df_ecos.empty:
+            all_dfs.append(df_ecos)
+
+    # --- [B] 야후 파이낸스 글로벌 데이터 수집 영역 ---
+    for cat_name, cat_info in YAHOO_CATEGORIES.items():
         data_type = cat_info["type"]
-
         for display_name, ticker in cat_info["tickers"].items():
             try:
-                df = yf.download(
-                    ticker, start=start_date, end=today, progress=False
-                )
-                if not df.empty and data_type in df.columns:
-                    col_data = df[data_type].copy()
-                    col_data.columns = pd.MultiIndex.from_tuples(
-                        [(cat_name, display_name)]
-                    )
-                    all_columns.append(col_data)
+                df_yf = yf.download(ticker, start=start_dt, end=today_dt, progress=False)
+                if not df_yf.empty and data_type in df_yf.columns:
+                    col_data = df_yf[data_type].copy()
+                    col_data.columns = pd.MultiIndex.from_tuples([(cat_name, display_name)])
+                    all_dfs.append(col_data)
             except Exception:
                 pass
 
-    if not all_columns:
+    if not all_dfs:
         return None
 
-    total_df = pd.concat(all_columns, axis=1)
-
-    # 1. 데이터가 완전히 없는 휴일 행 먼저 삭제
+    # 모든 소스의 데이터를 날짜 가로축 기준(axis=1)으로 결합
+    total_df = pd.concat(all_dfs, axis=1)
     total_df = total_df.dropna(how="all")
 
-    # 2. 가장 최근 7일(행)의 데이터만 슬라이싱하여 추출
-    total_df = total_df.tail(7)
-
-    # 3. 핵심 수정: 과거 날짜가 위, 최근 날짜가 아래로 오도록 정렬 (오름차순)
-    total_df = total_df.sort_index(ascending=True)
-
-    # 날짜 인덱스 포맷 정리
+    # 최근 7영업일 슬라이싱 및 최근 날짜가 맨 아래로 가도록 오름차순 정렬
+    total_df = total_df.tail(7).sort_index(ascending=True)
     total_df.index = total_df.index.strftime("%Y-%m-%d")
+
     return total_df.round(2)
 
 
-# 데이터 로드
-flat_data = fetch_total_flat_data()
+# 데이터 결합 처리
+final_data = fetch_all_combined_data()
 
-if flat_data is not None:
-    # 엑셀 파일 변환 작업 (메모리 상에서 빌드)
+if final_data is not None:
+    # 4. 서식 없는 순수 데이터용 엑셀 다운로드 버튼 배치
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        flat_data.to_excel(writer, sheet_name="경제지표")
+        final_data.to_excel(writer, sheet_name="종합경제지표")
 
-    # 상단 다운로드 버튼 배치
     st.download_button(
         label="📥 서식 없이 엑셀 파일로 바로 다운로드",
         data=buffer.getvalue(),
-        file_name=f"economy_data_{datetime.date.today()}.xlsx",
+        file_name=f"ecos_economy_data_{datetime.date.today()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
     st.markdown("### 🗓️ 날짜별 글로벌 지표 변동 현황 (최근 일주일)")
 
-    # 가로형 표 렌더링
-    st.dataframe(flat_data, use_container_width=True, height=350)
-    st.success("모든 카테고리가 날짜 순방향(최근 날짜가 아래로)으로 결합 완료되었습니다!")
+    # 5. 가로 스크롤 대형 표 출력
+    st.dataframe(final_data, use_container_width=True, height=350)
+    st.success("한국은행 ECOS 데이터와 글로벌 지표가 하나의 가로형 표로 결합되었습니다!")
 else:
-    st.error("데이터 수집 서버에 일시적인 문제가 생겼습니다.")
+    st.error(
+        "데이터를 로드하지 못했습니다. ECOS API 키가 정확한지 깃허브 코드를 확인해 주세요."
+    )
+
