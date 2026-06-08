@@ -13,7 +13,7 @@ st.write(
 )
 
 # 🔑 한국은행 ECOS API 인증키를 여기에 입력하세요.
-ECOS_API_KEY = "YOUR_ECOS_API_KEY"
+ECOS_API_KEY = "ZXBH7LM5BB9NFLDW0DEA"
 
 # 2. 야후 파이낸스로 가져올 글로벌 지표 정의
 YAHOO_CATEGORIES = {
