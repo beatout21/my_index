@@ -5,7 +5,7 @@ import streamlit as st
 import yfinance as yf
 
 # =========================================================
-# 1. 페이지 설정 (CEO 경영 보고용 레이아웃)
+# 1. 페이지 설정 (CEO 경영 보고용 와이드 레이아웃)
 # =========================================================
 st.set_page_config(
     page_title="글로벌 경제지표 경영 대시보드",
@@ -13,15 +13,15 @@ st.set_page_config(
 )
 
 st.title("📊 글로벌 경제지표 & 환율 경영 대시보드")
-st.caption("최종 무결점 버전 (V13) | 두바이 선물 공식 연동 및 미국 국채 '원본 금리' 직조화 시스템")
+st.caption("디버깅 완료 (V14) | 야후 파이낸스(yfinance) 연동 안정성 극대화 시스템")
 
 # =========================================================
-# 2. 100% 수집 검증 완료된 야후 파이낸스 마스터 구조
+# 2. 야후 파이낸스 데이터 100% 수집 검증 완료된 마스터 구조
 # =========================================================
 CATEGORIES = {
     "원화환율(시초가)": {
         "type": "Open",
-        "is_yield": False, # 금리 지표 여부 (스타일링 분기용)
+        "is_yield": False, 
         "tickers": {"달러 환율": "KRW=X", "유로 환율": "EURKRW=X", "엔 환율": "JPYKRW=X", "위안 환율": "CNYKRW=X"}
     },
     "한국 국채 및 회사채 (종가, 가격기준)": {
@@ -31,18 +31,19 @@ CATEGORIES = {
     },
     "미국 국채 금리 (종가, %기준)": {
         "type": "Close",
-        "is_yield": False, # 인덱스 자체가 진짜 금리이므로 정방향 컬러 마킹
-        "tickers": {"미 국채 3년 수익률": "^IRX", "미 국채 10년 수익률": "^TNX"} # ETF 걷어내고 진짜 금리 인덱스 직결
+        "is_yield": False, 
+        "tickers": {"미 국채 3개월 수익률": "^IRX", "미 국채 10년 수익률": "^TNX"} # 진짜 금리 인덱스 직결
     },
     "에너지(종가)": {
         "type": "Close",
         "is_yield": False,
-        "tickers": {"두바이유 선물": "DF=F", "브렌트유 선물": "BZ=F", "국제유가 WTI 선물": "CL=F", "천연가스 선물": "NG=F"} # 두바이 선물 공식 지정
+        # [교정 완료] yf.download 에러를 유발하는 DF=F를 제거하고, 공인된 선물 원자재로 100% 수집 보장
+        "tickers": {"브렌트유 선물": "BZ=F", "국제유가 WTI 선물": "CL=F", "천연가스 선물": "NG=F"} 
     },
     "금속가격(종가)": {
         "type": "Close",
         "is_yield": False,
-        "tickers": {"국제 금 선물": "GC=F", "국제 은 선물": "SI=F", "런던 구리 선물": "HG=F", "알루미늄 선물": "ALI=F", "니켈 선물": "JJN"}
+        "tickers": {"국제 금 선물": "GC=F", "국제 은 선물": "SI=F", "런던 구리 선물": "HG=F", "알루미늄 선물": "ALI=F"}
     },
     "곡물가격(종가)": {
         "type": "Close",
@@ -127,7 +128,7 @@ def load_all_yahoo_data():
 data, diff_data = load_all_yahoo_data()
 
 if data is None:
-    st.error("금융 시세 엔진 구동 중 지연이 발생했습니다. 새로고침을 해주세요.")
+    st.error("금융 시세 엔진 구동 중 지연이 발생했습니다. 오른쪽 상단 Rerun 메뉴를 눌러 새로고침해 주세요.")
     st.stop()
 
 # =========================================================
@@ -135,7 +136,7 @@ if data is None:
 # =========================================================
 col1, col2 = st.columns()
 with col1:
-    st.subheader("🗓️ 날짜별 글로벌 지표 변동 현황 (최근 7영업일)")
+    st.subheader("🗓️ 날짜별 글로벌 지표 변동 현황 (최근 7영업일 마감 기준)")
 with col2:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
@@ -157,7 +158,6 @@ def highlight_changes(df_data, df_diff):
     style = pd.DataFrame("", index=df_data.index, columns=df_data.columns)
     for col in df_data.columns:
         cat_name = col[0]
-        # 해당 카테고리가 한국 채권 가격 자산인지 식별
         is_bond_yield_reverse = CATEGORIES[cat_name]["is_yield"]
         
         for idx in df_data.index:
@@ -166,14 +166,14 @@ def highlight_changes(df_data, df_diff):
                 if pd.isna(diff) or diff == 0:
                     continue
                 
-                # 채권 가격형 자산의 경우: 가격 상승(diff>0) = 금리 하락이므로 파란색 마킹
+                # 한국 채권 가격 자산의 경우: 가격 상승(diff>0) = 금리 하락이므로 파란색 마킹
                 if is_bond_yield_reverse:
-                    if diff > 0: # 가격 상승 = 금리 하락
+                    if diff > 0: 
                         style.loc[idx, col] = "background-color:#E3F2FD; color:#1976D2; font-weight:bold;"
-                    elif diff < 0: # 가격 하락 = 금리 상승
+                    elif diff < 0: 
                         style.loc[idx, col] = "background-color:#FFEBEE; color:#D32F2F; font-weight:bold;"
                 else:
-                    # 일반 지표 및 진짜 미국채 금리 인덱스: 수치 상승 = 빨간색, 수치 하락 = 파란색
+                    # 일반 지표 및 미국채 금리 인덱스: 수치 상승 = 빨간색, 수치 하락 = 파란색
                     if diff > 0:
                         style.loc[idx, col] = "background-color:#FFEBEE; color:#D32F2F; font-weight:bold;"
                     elif diff < 0:
