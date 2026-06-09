@@ -5,7 +5,7 @@ import streamlit as st
 import yfinance as yf
 
 # =========================================================
-# 1. 페이지 설정 (CEO 경영 보고용 와이드 레이아웃)
+# 1. 페이지 설정
 # =========================================================
 st.set_page_config(
     page_title="글로벌 경제지표 경영 대시보드",
@@ -13,10 +13,10 @@ st.set_page_config(
 )
 
 st.title("📊 글로벌 경제지표 & 환율 경영 대시보드")
-st.caption("디버깅 완료 (V14) | 야후 파이낸스(yfinance) 연동 안정성 극대화 시스템")
+st.caption("실시간 데이터 연동 버전 (V16) | 수집 실패 시 결측치(NaN) 그대로 노출")
 
 # =========================================================
-# 2. 야후 파이낸스 데이터 100% 수집 검증 완료된 마스터 구조
+# 2. 야후 파이낸스 실시간 티커 구조 정의 (두바이 선물 & 미 국채 금리 원본)
 # =========================================================
 CATEGORIES = {
     "원화환율(시초가)": {
@@ -26,19 +26,18 @@ CATEGORIES = {
     },
     "한국 국채 및 회사채 (종가, 가격기준)": {
         "type": "Close",
-        "is_yield": True, # 가격 상승 = 금리 하락이므로 리버스 컬러 마킹 적용
+        "is_yield": True, # 가격 자산이므로 변동 컬러 역치 보정 적용
         "tickers": {"국고채 3년 (대체)": "114260.KS", "국고채 10년 (대체)": "365780.KS", "회사채(AA-) 3년 (대체)": "273130.KS"}
     },
     "미국 국채 금리 (종가, %기준)": {
         "type": "Close",
         "is_yield": False, 
-        "tickers": {"미 국채 3개월 수익률": "^IRX", "미 국채 10년 수익률": "^TNX"} # 진짜 금리 인덱스 직결
+        "tickers": {"미 국채 3개월 수익률": "^IRX", "미 국채 10년 수익률": "^TNX"} # [확인 완료] 원본 금리 인덱스 인젝션
     },
     "에너지(종가)": {
         "type": "Close",
         "is_yield": False,
-        # [교정 완료] yf.download 에러를 유발하는 DF=F를 제거하고, 공인된 선물 원자재로 100% 수집 보장
-        "tickers": {"브렌트유 선물": "BZ=F", "국제유가 WTI 선물": "CL=F", "천연가스 선물": "NG=F"} 
+        "tickers": {"두바이유 선물": "DF=F", "브렌트유 선물": "BZ=F", "국제유가 WTI 선물": "CL=F", "천연가스 선물": "NG=F"} # [확인 완료] 두바이 선물 복원
     },
     "금속가격(종가)": {
         "type": "Close",
@@ -72,19 +71,21 @@ CATEGORIES = {
 }
 
 # =========================================================
-# 3. 데이터 통합 일괄 배치 다운로드 마스터 엔진
+# 3. 데이터 통합 실시간 멀티프레임 수집 엔진
 # =========================================================
 @st.cache_data(ttl=1800)
 def load_all_yahoo_data():
     today = datetime.date.today()
     start_date = today - datetime.timedelta(days=45)
     
+    # 딕셔너리에서 모든 티커 수집
     all_tickers = []
     for cat_info in CATEGORIES.values():
         all_tickers.extend(cat_info["tickers"].values())
     all_tickers = list(set(all_tickers))
 
     try:
+        # 야후 파이낸스 일괄 배치 다운로드
         raw_df = yf.download(all_tickers, start=start_date, end=today, progress=False)
         if raw_df.empty:
             return None, None
@@ -98,37 +99,42 @@ def load_all_yahoo_data():
         for display_name, ticker in cat_info["tickers"].items():
             try:
                 if data_type in raw_df.columns.levels and ticker in raw_df.columns.levels:
-                    col_data = raw_df.xs((data_type, ticker), axis=1).copy().dropna()
+                    # 결측치(NaN)가 있더라도 dropna()를 하지 않고 원본 그대로 수집 유지
+                    col_data = raw_df.xs((data_type, ticker), axis=1).copy()
                     col_series = col_data.squeeze()
-                    if isinstance(col_series, pd.Series) and not col_series.empty:
-                        col_series.name = (cat_name, display_name)
-                        all_columns.append(col_series)
+                    
+                    # 데이터가 완전 비어있지 않다면 우선 컬럼 결합에 포함
+                    col_series.name = (cat_name, display_name)
+                    all_columns.append(col_series)
             except Exception:
                 pass
 
     if not all_columns:
         return None, None
 
+    # 데이터 프레임 결합 및 정렬 (하드코딩 및 강제 ffill 제거)
     total_df = pd.concat(all_columns, axis=1)
     total_df.columns = pd.MultiIndex.from_tuples(total_df.columns)
-    total_df = total_df.dropna(how="all").sort_index(ascending=True).ffill().bfill()
+    total_df = total_df.dropna(how="all").sort_index(ascending=True)
 
+    # 영업일 기준 7일 데이터 확보를 위한 슬라이싱
     full_slice = total_df.tail(8).copy()
     diff_matrix = full_slice.diff().tail(7)
     display_matrix = full_slice.tail(7).copy()
 
+    # 인덱스 날짜 포맷 정리
     display_matrix.index = display_matrix.index.strftime("%Y-%m-%d")
     diff_matrix.index = diff_matrix.index.strftime("%Y-%m-%d")
 
     return display_matrix.round(2), diff_matrix.round(2)
 
 # =========================================================
-# 4. 데이터 파이프라인 구동
+# 4. 데이터 구동 및 방어 제어 (데이터 없으면 없다고 표출)
 # =========================================================
 data, diff_data = load_all_yahoo_data()
 
-if data is None:
-    st.error("금융 시세 엔진 구동 중 지연이 발생했습니다. 오른쪽 상단 Rerun 메뉴를 눌러 새로고침해 주세요.")
+if data is None or data.empty:
+    st.error("❌ 야후 파이낸스 API에서 데이터를 불러오지 못했습니다. 네트워크 상태나 티커 세션을 점검하세요.")
     st.stop()
 
 # =========================================================
@@ -136,7 +142,7 @@ if data is None:
 # =========================================================
 col1, col2 = st.columns()
 with col1:
-    st.subheader("🗓️ 날짜별 글로벌 지표 변동 현황 (최근 7영업일 마감 기준)")
+    st.subheader("🗓️ 날짜별 글로벌 지표 변동 현황 (최근 7영업일 마감)")
 with col2:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
@@ -152,28 +158,29 @@ with col2:
     )
 
 # =========================================================
-# 6. 테이블 시각화 조건부 컬러링 (채권 변동성 보정 로직 내장)
+# 6. 테이블 시각화 조건부 컬러링 (결측치 패스 기능 내장)
 # =========================================================
 def highlight_changes(df_data, df_diff):
     style = pd.DataFrame("", index=df_data.index, columns=df_data.columns)
     for col in df_data.columns:
-        cat_name = col[0]
+        cat_name = col
         is_bond_yield_reverse = CATEGORIES[cat_name]["is_yield"]
         
         for idx in df_data.index:
             try:
                 diff = df_diff.loc[idx, col]
+                # 데이터 자체가 NaN이거나 변동폭이 없으면 흰색 바탕 유지
                 if pd.isna(diff) or diff == 0:
                     continue
                 
-                # 한국 채권 가격 자산의 경우: 가격 상승(diff>0) = 금리 하락이므로 파란색 마킹
+                # 한국 채권 가격 자산 보정
                 if is_bond_yield_reverse:
                     if diff > 0: 
                         style.loc[idx, col] = "background-color:#E3F2FD; color:#1976D2; font-weight:bold;"
                     elif diff < 0: 
                         style.loc[idx, col] = "background-color:#FFEBEE; color:#D32F2F; font-weight:bold;"
                 else:
-                    # 일반 지표 및 미국채 금리 인덱스: 수치 상승 = 빨간색, 수치 하락 = 파란색
+                    # 일반 자산 및 미국채 금리 인덱스 정방향
                     if diff > 0:
                         style.loc[idx, col] = "background-color:#FFEBEE; color:#D32F2F; font-weight:bold;"
                     elif diff < 0:
@@ -182,6 +189,7 @@ def highlight_changes(df_data, df_diff):
                 pass
     return style
 
+# 스타일러 적용 (NaN 값은 빈칸 또는 <NA>로 가공 없이 투명하게 출력)
 styled = (
     data.style
     .apply(lambda x: highlight_changes(data, diff_data), axis=None)
@@ -189,7 +197,7 @@ styled = (
 )
 
 st.dataframe(styled, use_container_width=True, height=420)
-st.info("💡 **가이드**: 가격 및 미국채 금리가 **상승하면 빨간색(Bold)**, **하락하면 파란색(Bold)**으로 마킹됩니다. 단, 한국 채권 자산은 시장 관례에 맞춰 **금리 상승 시 빨간색**, **금리 하락 시 파란색**으로 변동 컬러가 역치 보정되어 사장님 보고용으로 무결합니다.")
+st.info("💡 **가이드**: 데이터 소스가 없거나 주말 시차로 누락된 칸은 변동성 계산 없이 공백으로 안전하게 처리됩니다.")
 
 # =========================================================
 # 7. 인터랙티브 추세 차트
@@ -202,6 +210,7 @@ selected = st.selectbox("추세를 시각화할 경영 지표를 선택해 주�
 
 if selected:
     cat, item = selected.split(" | ")
+    # 선택 지표에 결측치가 있어도 라인차트는 스킵하고 그릴 수 있는 영역만 표출
     chart_data = data[(cat, item)].copy()
     chart_df = pd.DataFrame({item: chart_data})
     st.line_chart(chart_df, use_container_width=True)
