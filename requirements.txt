@@ -1,4 +1,3 @@
-yfinance
+streamlit
 pandas
 xlsxwriter
-requests
