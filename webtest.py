@@ -137,9 +137,9 @@ if not final_table.empty:
         if col != "날짜":
             formatted_df[col] = pd.to_numeric(formatted_df[col], errors='coerce')
             
-    # 시원하게 가로 스크롤을 활용하여 긴 단일 통합 표 출력
+    # [핵심 수정 부분] 최신 Pandas 문법에 맞게 format 옵션을 수정했습니다.
     st.dataframe(
-        formatted_df.style.format(num_format="{:,.2f}", na_rep="-"),
+        formatted_df.style.format(formatter="{:,.2f}", na_rep="-"),
         use_container_width=True,
         hide_index=True
     )
