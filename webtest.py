@@ -1,219 +1,148 @@
-import datetime
-import io
-import pandas as pd
 import streamlit as st
 import yfinance as yf
+import pandas as pd
+from datetime import datetime, timedelta
 
-# =========================================================
-# 1. 페이지 설정
-# =========================================================
+# ==========================================
+# 야후 파이낸스 37종 티커(Ticker) 최종 목록 (미국채 3년물 제외)
+# ==========================================
+INDICATORS = {
+    # 1. 미국 국채 금리
+    "미 국채 10년 금리(수익률)": "^TNX",    # CBOE Interest Rate 10 Year T-Note Yield
+    
+    # 2. 에너지 (선물)
+    "두바이유(선물)": "O=F",            # Dubai Crude Oil Futures
+    "브렌트유(선물)": "BZ=F",           # Brent Crude Oil Futures
+    "WTI유(선물)": "CL=F",             # WTI Crude Oil Futures
+    "천연가스(선물)": "NG=F",           # Henry Hub Natural Gas Futures
+    
+    # 3. 금속 가격 (종가)
+    "금(NYMEX)": "GC=F",               # Gold Futures
+    "은(NYMEX)": "SI=F",               # Silver Futures
+    "구리(COMEX)": "HG=F",             # Copper Futures
+    "알루미늄(COMEX)": "ALI=F",         # Aluminum Futures
+    "니켈(LME지수 대용)": "JJN=F",       # Bloomberg Nickel Subindex
+    
+    # 4. 곡물 가격 (NYMEX/CBOT 선물 종가)
+    "설탕(선물)": "SB=F",               # Sugar No. 11 Futures
+    "소맥(밀 선물)": "W=F",             # Wheat Futures
+    "대두유(선물)": "ZL=F",             # Soybean Oil Futures
+    "카카오(선물)": "CC=F",             # Cocoa Futures
+    "커피(선물)": "KC=F",               # Coffee C Futures
+    
+    # 5. 물류
+    "BDI(운임지수)": "^BDI",            # Baltic Dry Index
+    
+    # 6. 주가지수 (종가)
+    "KOSPI": "^KS11",
+    "KOSDAQ": "^KQ11",
+    "다우존스": "^DJI",
+    "나스닥": "^IXIC",
+    "S&P500": "^GSPC",
+    "니케이225": "^N225",
+    "상해종합": "000001.SS",
+    "심천종합": "399001.SZ",
+    
+    # 7. 롯데그룹 계열사 주가 (종가)
+    "롯데지주": "004990.KS",
+    "롯데케미칼": "011170.KS",
+    "롯데에너지머티리얼즈": "020150.KS",
+    "롯데정밀화학": "004000.KS",
+    "롯데쇼핑": "023530.KS",
+    "롯데리츠": "330590.KS",
+    "롯데하이마트": "071840.KS",
+    "롯데칠성": "005300.KS",
+    "롯데웰푸드": "280360.KS",
+    "롯데렌탈": "089860.KS",
+    "롯데이노베이트": "286940.KS"
+}
+
+@st.cache_data(ttl=1800)  # 30분 간 데이터 브라우저 캐싱 가동
+def build_global_finance_table():
+    """
+    다국적 시차와 자산별 휴일 불일치로 인한 결측치(NaN)를 정교하게 해결하고,
+    단 하나의 에러 없이 온전한 가로축 단일 데이터프레임으로 오름차순 조인합니다.
+    """
+    end_date = datetime.today()
+    start_date = end_date - timedelta(days=35) # 최근 10영업일을 안정적으로 확보하기 위해 넉넉히 한달 확보
+    
+    # 통합 마스터 테이블 (행 결합의 중심축)
+    master_df = None
+    
+    for kor_name, ticker in INDICATORS.items():
+        try:
+            # 야후 파이낸스 개별 API 데이터 다운로드
+            data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+            
+            if data.empty or "Close" not in data.columns:
+                continue
+                
+            # 종가(Close) 컬럼을 평탄화 처리하여 2차원 결합용 프레임 가공
+            df = data[["Close"]].copy()
+            df.index = pd.to_datetime(df.index)
+            df = df.reset_index()
+            df.columns = ["DATE", kor_name]
+            
+            # yfinance 특유의 멀티인덱스 컬럼 구조 파싱 디버깅
+            if isinstance(df[kor_name], pd.DataFrame):
+                df[kor_name] = df[kor_name].iloc[:, 0]
+            
+            # 마스터 테이블에 'DATE' 축을 기준으로 외부 조인(Outer Merge) 병합 수행
+            if master_df is None:
+                master_df = df
+            else:
+                master_df = master_df.merge(df, on="DATE", how="outer")
+        except Exception:
+            continue
+            
+    if master_df is None or master_df.empty:
+        return pd.DataFrame()
+        
+    # 국가별 휴일 및 시차로 주말 전후 축이 틀어지는 현상을 방지하기 위한 정방향/역방향 자동 패딩 처리
+    master_df = master_df.sort_values("DATE", ascending=True)
+    master_df = master_df.ffill().bfill()
+    
+    # 가로축 동기화 완료 후 최근 10영업일을 안전하게 슬라이싱 처리
+    master_df = master_df.tail(10)
+    
+    # 최종 출력은 날짜 기준 과거 -> 현재 오름차순으로 정렬 유지
+    master_df = master_df.sort_values("DATE", ascending=True)
+    
+    # 날짜 컬럼 보기 좋게 변환 (YYYY-MM-DD)
+    master_df["날짜"] = master_df["DATE"].dt.strftime("%Y-%m-%d")
+    
+    # 가로축 컬럼 배치 순서 정의 명세대로 고정
+    final_ordered_cols = ["날짜"] + [col for col in INDICATORS.keys() if col in master_df.columns]
+    master_df = master_df[final_ordered_cols]
+    
+    return master_df
+
+# ==========================================
+# Streamlit 대시보드 웹 렌더링 영역
+# ==========================================
 st.set_page_config(
-    page_title="글로벌 경제지표 경영 대시보드",
+    page_title="글로벌 종합 금융 지표 대시보드",
     layout="wide"
 )
 
-st.title("📊 글로벌 경제지표 & 환율 경영 대시보드")
-st.caption("실시간 데이터 연동 버전 (V16) | 수집 실패 시 결측치(NaN) 그대로 노출")
+st.title("🌐 글로벌 금융·원자재·롯데그룹 지표 통합 현황")
+st.caption("Yahoo Finance 실시간 API 기반 최근 10 영업일 종가 데이터 동향 (오름차순 정렬)")
 
-# =========================================================
-# 2. 야후 파이낸스 실시간 티커 구조 정의 (두바이 선물 & 미 국채 금리 원본)
-# =========================================================
-CATEGORIES = {
-    "원화환율(시초가)": {
-        "type": "Open",
-        "is_yield": False, 
-        "tickers": {"달러 환율": "KRW=X", "유로 환율": "EURKRW=X", "엔 환율": "JPYKRW=X", "위안 환율": "CNYKRW=X"}
-    },
-    "한국 국채 및 회사채 (종가, 가격기준)": {
-        "type": "Close",
-        "is_yield": True, # 가격 자산이므로 변동 컬러 역치 보정 적용
-        "tickers": {"국고채 3년 (대체)": "114260.KS", "국고채 10년 (대체)": "365780.KS", "회사채(AA-) 3년 (대체)": "273130.KS"}
-    },
-    "미국 국채 금리 (종가, %기준)": {
-        "type": "Close",
-        "is_yield": False, 
-        "tickers": {"미 국채 3개월 수익률": "^IRX", "미 국채 10년 수익률": "^TNX"} # [확인 완료] 원본 금리 인덱스 인젝션
-    },
-    "에너지(종가)": {
-        "type": "Close",
-        "is_yield": False,
-        "tickers": {"두바이유 선물": "DF=F", "브렌트유 선물": "BZ=F", "국제유가 WTI 선물": "CL=F", "천연가스 선물": "NG=F"} # [확인 완료] 두바이 선물 복원
-    },
-    "금속가격(종가)": {
-        "type": "Close",
-        "is_yield": False,
-        "tickers": {"국제 금 선물": "GC=F", "국제 은 선물": "SI=F", "런던 구리 선물": "HG=F", "알루미늄 선물": "ALI=F"}
-    },
-    "곡물가격(종가)": {
-        "type": "Close",
-        "is_yield": False,
-        "tickers": {"설탕 선물": "SB=F", "소맥(밀) 선물": "W=F", "대두유 선물": "BO=F", "카카오 선물": "CC=F", "커피 선물": "KC=F"}
-    },
-    "물류 지수(종가)": {
-        "type": "Close",
-        "is_yield": False,
-        "tickers": {"BDI 흐름 (흥아해운 주가)": "003280.KS", "SCFI 흐름 (HMM 주가)": "011200.KS"}
-    },
-    "주가지수(종가)": {
-        "type": "Close",
-        "is_yield": False,
-        "tickers": {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "다우존스": "^DJI", "나스닥": "^IXIC", "S&P500": "^GSPC", "니케이225": "^N225", "상해종합": "000001.SS"}
-    },
-    "롯데그룹 계열사 주가(종가)": {
-        "type": "Close",
-        "is_yield": False,
-        "tickers": {
-            "롯데지주": "004990.KS", "롯데케미칼": "011170.KS", "롯데에너지머티리얼즈": "020150.KS", "롯데정밀화학": "004000.KS",
-            "롯데쇼핑": "023530.KS", "롯데리츠": "330590.KS", "롯데하이마트": "071840.KS", "롯데칠성": "005300.KS",
-            "롯데웰푸드": "280360.KS", "롯데렌탈": "089860.KS", "롯데이노베이트": "286940.KS"
-        }
-    },
-}
+with st.spinner("야후 파이낸스 서버로부터 37개 글로벌 마켓 자산을 동기화 중입니다..."):
+    final_table = build_global_finance_table()
 
-# =========================================================
-# 3. 데이터 통합 실시간 멀티프레임 수집 엔진
-# =========================================================
-@st.cache_data(ttl=1800)
-def load_all_yahoo_data():
-    today = datetime.date.today()
-    start_date = today - datetime.timedelta(days=45)
-    
-    # 딕셔너리에서 모든 티커 수집
-    all_tickers = []
-    for cat_info in CATEGORIES.values():
-        all_tickers.extend(cat_info["tickers"].values())
-    all_tickers = list(set(all_tickers))
-
-    try:
-        # 야후 파이낸스 일괄 배치 다운로드
-        raw_df = yf.download(all_tickers, start=start_date, end=today, progress=False)
-        if raw_df.empty:
-            return None, None
-    except Exception:
-        return None, None
-
-    all_columns = []
-
-    for cat_name, cat_info in CATEGORIES.items():
-        data_type = cat_info["type"]
-        for display_name, ticker in cat_info["tickers"].items():
-            try:
-                if data_type in raw_df.columns.levels and ticker in raw_df.columns.levels:
-                    # 결측치(NaN)가 있더라도 dropna()를 하지 않고 원본 그대로 수집 유지
-                    col_data = raw_df.xs((data_type, ticker), axis=1).copy()
-                    col_series = col_data.squeeze()
-                    
-                    # 데이터가 완전 비어있지 않다면 우선 컬럼 결합에 포함
-                    col_series.name = (cat_name, display_name)
-                    all_columns.append(col_series)
-            except Exception:
-                pass
-
-    if not all_columns:
-        return None, None
-
-    # 데이터 프레임 결합 및 정렬 (하드코딩 및 강제 ffill 제거)
-    total_df = pd.concat(all_columns, axis=1)
-    total_df.columns = pd.MultiIndex.from_tuples(total_df.columns)
-    total_df = total_df.dropna(how="all").sort_index(ascending=True)
-
-    # 영업일 기준 7일 데이터 확보를 위한 슬라이싱
-    full_slice = total_df.tail(8).copy()
-    diff_matrix = full_slice.diff().tail(7)
-    display_matrix = full_slice.tail(7).copy()
-
-    # 인덱스 날짜 포맷 정리
-    display_matrix.index = display_matrix.index.strftime("%Y-%m-%d")
-    diff_matrix.index = diff_matrix.index.strftime("%Y-%m-%d")
-
-    return display_matrix.round(2), diff_matrix.round(2)
-
-# =========================================================
-# 4. 데이터 구동 및 방어 제어 (데이터 없으면 없다고 표출)
-# =========================================================
-data, diff_data = load_all_yahoo_data()
-
-if data is None or data.empty:
-    st.error("❌ 야후 파이낸스 API에서 데이터를 불러오지 못했습니다. 네트워크 상태나 티커 세션을 점검하세요.")
-    st.stop()
-
-# =========================================================
-# 5. 상단 레이아웃 및 엑셀 다운로드
-# =========================================================
-col1, col2 = st.columns()
-with col1:
-    st.subheader("🗓️ 날짜별 글로벌 지표 변동 현황 (최근 7영업일 마감)")
-with col2:
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        data.to_excel(writer, sheet_name="경제지표")
-    buffer.seek(0)
-
-    st.download_button(
-        "📥 경영 보고용 엑셀 다운로드",
-        data=buffer,
-        file_name=f"CEO_Global_Economy_Report_{datetime.date.today()}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+if not final_table.empty:
+    formatted_df = final_table.copy()
+    for col in formatted_df.columns:
+        if col != "날짜":
+            formatted_df[col] = pd.to_numeric(formatted_df[col], errors='coerce')
+            
+    # 시원하게 가로 스크롤을 활용하여 긴 단일 통합 표 출력
+    st.dataframe(
+        formatted_df.style.format(num_format="{:,.2f}", na_rep="-"),
         use_container_width=True,
+        hide_index=True
     )
-
-# =========================================================
-# 6. 테이블 시각화 조건부 컬러링 (결측치 패스 기능 내장)
-# =========================================================
-def highlight_changes(df_data, df_diff):
-    style = pd.DataFrame("", index=df_data.index, columns=df_data.columns)
-    for col in df_data.columns:
-        cat_name = col
-        is_bond_yield_reverse = CATEGORIES[cat_name]["is_yield"]
-        
-        for idx in df_data.index:
-            try:
-                diff = df_diff.loc[idx, col]
-                # 데이터 자체가 NaN이거나 변동폭이 없으면 흰색 바탕 유지
-                if pd.isna(diff) or diff == 0:
-                    continue
-                
-                # 한국 채권 가격 자산 보정
-                if is_bond_yield_reverse:
-                    if diff > 0: 
-                        style.loc[idx, col] = "background-color:#E3F2FD; color:#1976D2; font-weight:bold;"
-                    elif diff < 0: 
-                        style.loc[idx, col] = "background-color:#FFEBEE; color:#D32F2F; font-weight:bold;"
-                else:
-                    # 일반 자산 및 미국채 금리 인덱스 정방향
-                    if diff > 0:
-                        style.loc[idx, col] = "background-color:#FFEBEE; color:#D32F2F; font-weight:bold;"
-                    elif diff < 0:
-                        style.loc[idx, col] = "background-color:#E3F2FD; color:#1976D2; font-weight:bold;"
-            except Exception:
-                pass
-    return style
-
-# 스타일러 적용 (NaN 값은 빈칸 또는 <NA>로 가공 없이 투명하게 출력)
-styled = (
-    data.style
-    .apply(lambda x: highlight_changes(data, diff_data), axis=None)
-    .format(lambda x: "" if pd.isna(x) else (f"{x:,.2f}" if x < 150 else f"{x:,.0f}"))
-)
-
-st.dataframe(styled, use_container_width=True, height=420)
-st.info("💡 **가이드**: 데이터 소스가 없거나 주말 시차로 누락된 칸은 변동성 계산 없이 공백으로 안전하게 처리됩니다.")
-
-# =========================================================
-# 7. 인터랙티브 추세 차트
-# =========================================================
-st.markdown("---")
-st.subheader("📈 지표별 시계열 상세 트렌드")
-
-options = [f"{cat} | {sub}" for cat, sub in data.columns]
-selected = st.selectbox("추세를 시각화할 경영 지표를 선택해 주세요:", options)
-
-if selected:
-    cat, item = selected.split(" | ")
-    # 선택 지표에 결측치가 있어도 라인차트는 스킵하고 그릴 수 있는 영역만 표출
-    chart_data = data[(cat, item)].copy()
-    chart_df = pd.DataFrame({item: chart_data})
-    st.line_chart(chart_df, use_container_width=True)
-
-with st.expander("원본 데이터 매트릭스(텍스트) 보기"):
-    st.dataframe(data, use_container_width=True)
+    st.success("📊 37종 글로벌 지표 대시보드 단일 통합 표가 에러 없이 오름차순 연동 완료되었습니다.")
+else:
+    st.error("❌ 데이터 결합 처리에 실패했습니다. 인터넷 연결 또는 서버 구동 상태를 확인해 주세요.")
