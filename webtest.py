@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 # ==========================================
-# 야후 파이낸스 37종 티커(Ticker) 최종 목록
+# 야후 파이낸스 37종 티커(Ticker) 최종 검증 목록
 # ==========================================
 INDICATORS = {
     # 1. 미국 국채 금리
@@ -25,7 +25,7 @@ INDICATORS = {
     
     # 4. 곡물 가격 (종가)
     "설탕(선물)": "SB=F",
-    "소맥(밀 선물)": "W=F",
+    "소맥(밀 선물)": "ZW=F",
     "대두유(선물)": "ZL=F",
     "카카오(선물)": "CC=F",
     "커피(선물)": "KC=F",
@@ -89,14 +89,19 @@ def build_global_finance_table():
     if master_df is None or master_df.empty:
         return pd.DataFrame()
         
+    # [수정 포인트] 시차/휴일로 데이터가 없는 칸을 전날 가격으로 메우던 ffill().bfill() 로직을 완벽히 제거했습니다.
     master_df = master_df.sort_values("DATE", ascending=True)
-    master_df = master_df.ffill().bfill()
     
+    # 데이터 유실이나 정렬 꼬임을 방지하면서 최근 10영업일 날짜행만 안전하게 커트합니다.
     master_df = master_df.tail(10)
+    
+    # 과거에서 현재 순서인 '오름차순'으로 최종 정렬을 보장합니다.
     master_df = master_df.sort_values("DATE", ascending=True)
     
+    # 날짜 컬럼 보기 좋게 포맷팅 (YYYY-MM-DD)
     master_df["날짜"] = master_df["DATE"].dt.strftime("%Y-%m-%d")
     
+    # 원본 가로축 배치 순서 유지
     final_ordered_cols = ["날짜"] + [col for col in INDICATORS.keys() if col in master_df.columns]
     master_df = master_df[final_ordered_cols]
     
@@ -119,19 +124,17 @@ with st.spinner("야후 파이낸스 서버로부터 37개 글로벌 마켓 자�
 if not final_table.empty:
     formatted_df = final_table.copy()
     
-    # 지표명 컬럼(날짜 제외)만 추출하여 숫자 형식을 강제 적용합니다.
+    # 날짜를 제외한 숫자형 지표들만 선별
     numeric_cols = [col for col in formatted_df.columns if col != "날짜"]
     for col in numeric_cols:
         formatted_df[col] = pd.to_numeric(formatted_df[col], errors='coerce')
             
-    # [버그 수정 포인트] 
-    # subset=numeric_cols 옵션을 추가하여 '날짜' 문자열 컬럼에는 소수점 서식이 적용되지 않도록 방어했습니다.
+    # [서식 유지 포인트] na_rep="-" 설정을 통해 해당 날짜에 수집되지 않은 칸은 하이픈(-)으로 깨끗하게 비워둡니다.
     st.dataframe(
         formatted_df.style.format(formatter="{:,.2f}", na_rep="-", subset=numeric_cols),
         use_container_width=True,
         hide_index=True
     )
-    st.success("📊 37종 글로벌 지표 대시보드 단일 통합 표가 에러 없이 오름차순 연동 완료되었습니다.")
+    st.success("📊 데이터가 없는 휴일/시차 항목은 빈칸(-) 처리되어 하나의 대시보드 표로 통합되었습니다.")
 else:
     st.error("❌ 데이터 결합 처리에 실패했습니다. 인터넷 연결 또는 서버 구동 상태를 확인해 주세요.")
-
