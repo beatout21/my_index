@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 # ==========================================
-# 야후 파이낸스 37종 티커(Ticker) 최종 검증 목록
+# 야후 파이낸스 38종 티커(Ticker) 최종 검증 목록
 # ==========================================
 INDICATORS = {
     # 1. 미국 국채 금리
@@ -21,7 +21,7 @@ INDICATORS = {
     "은(NYMEX)": "SI=F",
     "구리(COMEX)": "HG=F",
     "알루미늄(COMEX)": "ALI=F",
-    "니켈(LME지수 대용)": "JJN=F",
+    "니켈(LME대용)": "JJN=F",
     
     # 4. 곡물 가격 (종가)
     "설탕(선물)": "SB=F",
@@ -30,10 +30,9 @@ INDICATORS = {
     "카카오(선물)": "CC=F",
     "커피(선물)": "KC=F",
     
-    # 5. 물류
-    "BDI(운임지수)": "^BDI",
-    
-    # 6. 주가지수 (종가)
+    # 5. 주가지수 및 주요 인덱스 (종가)
+    "BDI": "BDIY.X",       # [위치 변경] KOSPI 앞으로 배치
+    "SOX": "^SOX", # [위치 변경] KOSPI 앞으로 배치
     "KOSPI": "^KS11",
     "KOSDAQ": "^KQ11",
     "다우존스": "^DJI",
@@ -43,7 +42,7 @@ INDICATORS = {
     "상해종합": "000001.SS",
     "심천종합": "399001.SZ",
     
-    # 7. 롯데그룹 계열사 주가 (종가)
+    # 6. 롯데그룹 계열사 주가 (종가)
     "롯데지주": "004990.KS",
     "롯데케미칼": "011170.KS",
     "롯데에너지머티리얼즈": "020150.KS",
@@ -89,7 +88,6 @@ def build_global_finance_table():
     if master_df is None or master_df.empty:
         return pd.DataFrame()
         
-    # [수정 포인트] 시차/휴일로 데이터가 없는 칸을 전날 가격으로 메우던 ffill().bfill() 로직을 완벽히 제거했습니다.
     master_df = master_df.sort_values("DATE", ascending=True)
     
     # 데이터 유실이나 정렬 꼬임을 방지하면서 최근 10영업일 날짜행만 안전하게 커트합니다.
@@ -118,7 +116,7 @@ st.set_page_config(
 st.title("🌐 글로벌 금융·원자재·롯데그룹 지표 통합 현황")
 st.caption("Yahoo Finance 실시간 API 기반 최근 10 영업일 종가 데이터 동향 (오름차순 정렬)")
 
-with st.spinner("야후 파이낸스 서버로부터 37개 글로벌 마켓 자산을 동기화 중입니다..."):
+with st.spinner("야후 파이낸스 서버로부터 38개 글로벌 마켓 자산을 동기화 중입니다..."):
     final_table = build_global_finance_table()
 
 if not final_table.empty:
@@ -129,7 +127,6 @@ if not final_table.empty:
     for col in numeric_cols:
         formatted_df[col] = pd.to_numeric(formatted_df[col], errors='coerce')
             
-    # [서식 유지 포인트] na_rep="-" 설정을 통해 해당 날짜에 수집되지 않은 칸은 하이픈(-)으로 깨끗하게 비워둡니다.
     st.dataframe(
         formatted_df.style.format(formatter="{:,.2f}", na_rep="-", subset=numeric_cols),
         use_container_width=True,
