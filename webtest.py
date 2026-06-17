@@ -58,22 +58,36 @@ INDICATORS = {
 
 @st.cache_data(ttl=1800)
 def build_global_finance_table():
-    # 1. 오늘 날짜 데이터까지 안전하게 포함하기 위해 end_date를 내일로 설정
+    # 시차 문제를 고려해 날짜 여유를 두고 40일 전부터 내일까지 수집
     end_date = datetime.today() + timedelta(days=1)
-    start_date = end_date - timedelta(days=35)
+    start_date = end_date - timedelta(days=40)
     
-    master_df = None
-    
+    # [핵심 수정] 날짜 꼬임 방지를 위해 기준 자산(KOSPI)으로 마스터 틀을 먼저 생성
+    try:
+        base_data = yf.download("^KS11", start=start_date, end=end_date, progress=False)
+        if base_data.empty:
+            # 코스피가 실패하면 S&P500을 대안 기준선으로 설정
+            base_data = yf.download("^GSPC", start=start_date, end=end_date, progress=False)
+            
+        base_df = base_data[["Close"]].copy()
+        base_df.index = pd.to_datetime(base_df.index).tz_localize(None)
+        base_df = base_df.reset_index()
+        base_df.columns = ["DATE", "BASE_TARGET"]
+        
+        # 기준선 자산의 데이터에서 최신 10영업일 날짜만 정확하게 필터링
+        base_df = base_df.sort_values("DATE", ascending=True).tail(10)
+        master_df = base_df[["DATE"]].copy() # 10개 날짜만 가진 뼈대 프레임 생성
+    except Exception:
+        return pd.DataFrame()
+
+    # 38개 지표 순회하며 Left Merge 진행 (마스터의 10개 날짜 틀에 얹기)
     for kor_name, ticker in INDICATORS.items():
         try:
             data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-            
             if data.empty or "Close" not in data.columns:
                 continue
                 
             df = data[["Close"]].copy()
-            
-            # 2. 타임존 제거 및 날짜 형식 통일 (시차로 인한 merge 분리 방지)
             df.index = pd.to_datetime(df.index).tz_localize(None)
             df = df.reset_index()
             df.columns = ["DATE", kor_name]
@@ -81,30 +95,18 @@ def build_global_finance_table():
             if isinstance(df[kor_name], pd.DataFrame):
                 df[kor_name] = df[kor_name].iloc[:, 0]
             
-            if master_df is None:
-                master_df = df
-            else:
-                master_df = master_df.merge(df, on="DATE", how="outer")
+            # how="left"로 결합하여 마스터의 10일 기준 날짜 규격 훼손을 차단합니다.
+            master_df = master_df.merge(df, on="DATE", how="left")
         except Exception:
             continue
             
     if master_df is None or master_df.empty:
         return pd.DataFrame()
         
-    # 3. 날짜 순으로 정렬
-    master_df = master_df.sort_values("DATE", ascending=True)
-    
-    # 4. 주말/공휴일 등으로 인해 모든 자산의 값이 다 비어있는 유령 행 제거
-    numeric_cols_only = [c for c in master_df.columns if c != "DATE"]
-    master_df = master_df.dropna(how="all", subset=numeric_cols_only)
-    
-    # 최근 10영업일 날짜행 커트
-    master_df = master_df.tail(10)
-    
-    # 날짜 컬럼 보기 좋게 포맷팅 (YYYY-MM-DD)
+    # 날짜 컬럼 포맷팅 (YYYY-MM-DD)
     master_df["날짜"] = master_df["DATE"].dt.strftime("%Y-%m-%d")
     
-    # 원본 가로축 배치 순서 유지
+    # 원래 딕셔너리 정렬 순서대로 가로 축 재정렬
     final_ordered_cols = ["날짜"] + [col for col in INDICATORS.keys() if col in master_df.columns]
     master_df = master_df[final_ordered_cols]
     
@@ -127,7 +129,6 @@ with st.spinner("야후 파이낸스 서버로부터 38개 글로벌 마켓 자�
 if not final_table.empty:
     formatted_df = final_table.copy()
     
-    # 날짜를 제외한 숫자형 지표들만 선별
     numeric_cols = [col for col in formatted_df.columns if col != "날짜"]
     for col in numeric_cols:
         formatted_df[col] = pd.to_numeric(formatted_df[col], errors='coerce')
@@ -140,3 +141,4 @@ if not final_table.empty:
     st.success("📊 데이터가 없는 휴일/시차 항목은 빈칸(-) 처리되어 하나의 대시보드 표로 통합되었습니다.")
 else:
     st.error("❌ 데이터 결합 처리에 실패했습니다. 인터넷 연결 또는 서버 구동 상태를 확인해 주세요.")
+
