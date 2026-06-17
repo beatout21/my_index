@@ -31,8 +31,8 @@ INDICATORS = {
     "커피(선물)": "KC=F",
     
     # 5. 주가지수 및 주요 인덱스 (종가)
-    "BDI": "BDIY.X",       # [위치 변경] KOSPI 앞으로 배치
-    "SOX": "^SOX", # [위치 변경] KOSPI 앞으로 배치
+    "BDI": "BDIY.X",       
+    "SOX": "^SOX", 
     "KOSPI": "^KS11",
     "KOSDAQ": "^KQ11",
     "다우존스": "^DJI",
@@ -58,7 +58,8 @@ INDICATORS = {
 
 @st.cache_data(ttl=1800)
 def build_global_finance_table():
-    end_date = datetime.today()
+    # 1. 오늘 날짜 데이터까지 안전하게 포함하기 위해 end_date를 내일로 설정
+    end_date = datetime.today() + timedelta(days=1)
     start_date = end_date - timedelta(days=35)
     
     master_df = None
@@ -71,7 +72,9 @@ def build_global_finance_table():
                 continue
                 
             df = data[["Close"]].copy()
-            df.index = pd.to_datetime(df.index)
+            
+            # 2. 타임존 제거 및 날짜 형식 통일 (시차로 인한 merge 분리 방지)
+            df.index = pd.to_datetime(df.index).tz_localize(None)
             df = df.reset_index()
             df.columns = ["DATE", kor_name]
             
@@ -88,13 +91,15 @@ def build_global_finance_table():
     if master_df is None or master_df.empty:
         return pd.DataFrame()
         
+    # 3. 날짜 순으로 정렬
     master_df = master_df.sort_values("DATE", ascending=True)
     
-    # 데이터 유실이나 정렬 꼬임을 방지하면서 최근 10영업일 날짜행만 안전하게 커트합니다.
+    # 4. 주말/공휴일 등으로 인해 모든 자산의 값이 다 비어있는 유령 행 제거
+    numeric_cols_only = [c for c in master_df.columns if c != "DATE"]
+    master_df = master_df.dropna(how="all", subset=numeric_cols_only)
+    
+    # 최근 10영업일 날짜행 커트
     master_df = master_df.tail(10)
-    
-    # 과거에서 현재 순서인 '오름차순'으로 최종 정렬을 보장합니다.
-    master_df = master_df.sort_values("DATE", ascending=True)
     
     # 날짜 컬럼 보기 좋게 포맷팅 (YYYY-MM-DD)
     master_df["날짜"] = master_df["DATE"].dt.strftime("%Y-%m-%d")
